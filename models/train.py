@@ -83,9 +83,9 @@ def train_model(model, X_train, y_train, X_val, y_val, epochs=EPOCHS,
     else:
         criterion = nn.BCELoss()  # 分类用 BCE
     
-    optimizer = optim.Adam(model.parameters(), lr=lr)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', 
-                                                      factor=0.5, patience=5)
+    # AdamW + 权重衰减（减少过拟合）
+    optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=lr/10)
     
     # 早停
     early_stopping = EarlyStopping(patience=15, min_delta=0.001)

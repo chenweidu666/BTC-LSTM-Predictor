@@ -11,11 +11,14 @@ SETTLE = "usdt"
 INTERVAL = "4h"  # K 线周期
 
 # 模型配置
-SEQUENCE_LENGTH = 60  # 输入序列长度（60 根 K 线 = 10 天）
-INPUT_FEATURES = 42   # 输入特征数量（42 个量化特征）
-HIDDEN_SIZE = 128     # LSTM 隐藏层大小（增加模型容量）
-NUM_LAYERS = 3        # LSTM 层数（增加深度）
-DROPOUT = 0.3         # Dropout 比例（防止过拟合）
+SEQUENCE_LENGTH = 60   # 输入序列长度（60 根 K 线 = 10 天）
+INPUT_FEATURES = 20    # 输入特征数量（核心 20 个特征）
+HIDDEN_SIZE = 64       # LSTM 隐藏层大小
+NUM_LAYERS = 2         # LSTM 层数
+DROPOUT = 0.4          # Dropout 比例
+
+# 特征选择模式：'all'=42 个，'core'=20 个核心，'momentum'=25 个动量
+FEATURE_SELECTION = 'core'
 
 # 训练配置
 BATCH_SIZE = 64       # 增加 batch size

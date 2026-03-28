@@ -13,13 +13,15 @@ from config import SEQUENCE_LENGTH, DATA_DIR
 from utils.indicators import calculate_indicators, get_feature_columns
 
 
-def prepare_features(df: pd.DataFrame, funding_df: pd.DataFrame = None) -> tuple:
+def prepare_features(df: pd.DataFrame, funding_df: pd.DataFrame = None, 
+                     feature_selection: str = 'all') -> tuple:
     """
     准备特征数据
     
     Args:
         df: 原始 K 线数据
         funding_df: 资金费率数据（可选）
+        feature_selection: 'all'=全部 42 个，'core'=核心 20 个，'momentum'=动量为主
     
     Returns:
         (features_df, scaler) 特征 DataFrame 和标准化器
@@ -36,10 +38,70 @@ def prepare_features(df: pd.DataFrame, funding_df: pd.DataFrame = None) -> tuple
         df['funding_rate'] = df['funding_rate'].fillna(0)
     
     # 选择特征列
-    feature_cols = get_feature_columns()
+    if feature_selection == 'core':
+        # 核心特征（20 个，减少冗余）
+        feature_cols = [
+            'close', 'volume',
+            'rsi', 'macd', 'macd_diff',
+            'adx', 'bias_sma20', 'bias_sma50',
+            'bb_pct', 'bb_width', 'atr_pct',
+            'williams_r', 'roc_5', 'roc_10',
+            'volume_ratio', 'obv_change',
+            'candle_body', 'candle_range',
+            'momentum_accel', 'volatility'
+        ]
+    elif feature_selection == 'momentum':
+        # 动量特征为主（25 个）
+        feature_cols = [
+            'close', 'volume',
+            'rsi', 'macd', 'macd_diff', 'macd_signal',
+            'stoch_rsi', 'stoch_rsi_d', 'williams_r',
+            'roc_5', 'roc_10', 'roc_20',
+            'bias_sma20', 'bias_sma50', 'bias_ema12',
+            'bb_pct', 'volatility', 'volatility_ratio',
+            'volume_change', 'volume_ratio',
+            'candle_body', 'momentum_accel',
+            'ma_cross', 'adx', 'atr_pct'
+        ]
+    elif feature_selection == 'minimal':
+        # 精简特征（15 个，只保留相对有效的）
+        feature_cols = [
+            'close',           # 需要用于计算 target
+            'momentum_accel',  # 最相关 +0.073
+            'candle_body',     # K 线实体 +0.057
+            'candle_upper',    # 上影线 +0.046
+            'volatility_ratio', # +0.035
+            'volume_change',   # -0.024
+            'stoch_rsi',       # +0.024
+            'roc_20',          # -0.023
+            'atr',             # -0.023
+            'bb_width',        # +0.023
+            'obv_change',      # +0.022
+            'williams_r',      # 动量
+            'roc_5',           # 短期动量
+            'ma_cross',        # 均线交叉
+            'bias_sma20',      # 乖离率
+        ]
+    else:
+        # 全部 42 个特征
+        feature_cols = get_feature_columns()
+    
     available_cols = [col for col in feature_cols if col in df.columns]
     
+    print(f"特征模式：{feature_selection}")
     print(f"使用 {len(available_cols)} 个特征")
+    
+    # 特征重要性分析
+    if feature_selection == 'all':
+        print("\n特征相关性分析（与目标变量）...")
+        target = df['close'].pct_change().shift(-1)  # 下一期收益率
+        correlations = []
+        for col in available_cols[:10]:  # 只分析前 10 个
+            corr = df[col].corr(target)
+            correlations.append((col, corr))
+        correlations.sort(key=lambda x: abs(x[1]), reverse=True)
+        for col, corr in correlations[:5]:
+            print(f"  {col}: {corr:+.4f}")
     
     features = df[available_cols].copy()
     
@@ -143,6 +205,7 @@ def load_and_prepare(filename: str = None) -> tuple:
         (X, y, scaler) 准备好的数据和标准化器
     """
     from data.fetch_data import load_data, fetch_klines
+    from config import FEATURE_SELECTION
     
     # 尝试加载本地数据，如果没有则获取新数据
     if filename:
@@ -153,8 +216,8 @@ def load_and_prepare(filename: str = None) -> tuple:
     if df.empty:
         raise ValueError("无法获取数据")
     
-    # 准备特征
-    features, scaler = prepare_features(df)
+    # 准备特征（使用特征选择）
+    features, scaler = prepare_features(df, feature_selection=FEATURE_SELECTION)
     
     # 创建序列（使用回归模式）
     from models.train import REGRESSION_MODE
