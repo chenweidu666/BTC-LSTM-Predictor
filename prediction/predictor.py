@@ -93,15 +93,30 @@ class BTCPredictor:
         # 计算技术指标
         recent_df = calculate_indicators(recent_df)
         
-        # 选择特征列（与 preprocess.py 一致）
+        # 选择特征列（42 个，与 preprocess.py 一致）
         feature_cols = [
+            # 基础价格
             'open', 'high', 'low', 'close', 'volume',
+            # 趋势指标
             'rsi', 'macd', 'macd_signal', 'macd_diff',
             'adx', 'adx_pos', 'adx_neg',
-            'bb_pct', 'bb_high', 'bb_low',
             'sma_20', 'sma_50', 'ema_12', 'ema_26',
-            'price_change', 'price_change_5',
-            'volatility', 'volume_change'
+            'bias_sma20', 'bias_sma50', 'bias_ema12',
+            'ma_cross',
+            # 波动率指标
+            'bb_pct', 'bb_width',
+            'atr', 'atr_pct',
+            'volatility', 'volatility_ratio',
+            # 动量指标
+            'stoch_rsi', 'stoch_rsi_d',
+            'williams_r',
+            'roc_5', 'roc_10', 'roc_20',
+            # 成交量指标
+            'volume_change', 'volume_ratio',
+            'obv_change', 'price_volume_corr',
+            # 价格形态
+            'candle_body', 'candle_upper', 'candle_lower', 'candle_range',
+            'high_low_ratio', 'momentum_accel'
         ]
         available_cols = [col for col in feature_cols if col in recent_df.columns]
         
@@ -139,35 +154,40 @@ class BTCPredictor:
         # 准备输入
         input_tensor = self.prepare_input(latest_klines)
         
-        # 预测
+        # 预测（回归模式：输出涨跌幅）
         with torch.no_grad():
-            probability = self.model(input_tensor).item()
+            predicted_return = self.model(input_tensor).item()
+        
+        # 转换为概率（sigmoid）
+        import math
+        probability = 1 / (1 + math.exp(-predicted_return * 10))  # 缩放到 0-1
         
         # 解析结果
         prediction = {
             'timestamp': datetime.now(timezone.utc).isoformat(),
+            'predicted_return': predicted_return,
             'probability': probability,
-            'direction': '涨' if probability > PREDICT_THRESHOLD else '跌' if probability < (1 - PREDICT_THRESHOLD) else '震荡',
-            'confidence': '高' if probability > 0.7 or probability < 0.3 else '中' if probability > 0.55 or probability < 0.45 else '低',
+            'direction': '涨' if predicted_return > 0 else '跌',
+            'confidence': '高' if abs(predicted_return) > 0.03 else '中' if abs(predicted_return) > 0.01 else '低',
             'current_price': latest_klines['close'].iloc[-1],
-            'recommendation': self._get_recommendation(probability)
+            'recommendation': self._get_recommendation_return(predicted_return)
         }
         
         return prediction
     
-    def _get_recommendation(self, probability: float) -> str:
-        """根据概率给出操作建议"""
-        if probability > 0.7:
+    def _get_recommendation_return(self, predicted_return: float) -> str:
+        """根据预测涨跌幅给出操作建议"""
+        if predicted_return > 0.03:
             return "强烈建议做多"
-        elif probability > 0.6:
+        elif predicted_return > 0.01:
             return "建议做多"
-        elif probability > 0.55:
+        elif predicted_return > 0.005:
             return "谨慎做多"
-        elif probability < 0.3:
+        elif predicted_return < -0.03:
             return "强烈建议做空/平仓"
-        elif probability < 0.4:
+        elif predicted_return < -0.01:
             return "建议做空/平仓"
-        elif probability < 0.45:
+        elif predicted_return < -0.005:
             return "谨慎做空"
         else:
             return "持仓观望"
