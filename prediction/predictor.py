@@ -93,11 +93,15 @@ class BTCPredictor:
         # 计算技术指标
         recent_df = calculate_indicators(recent_df)
         
-        # 选择特征列
+        # 选择特征列（与 preprocess.py 一致）
         feature_cols = [
             'open', 'high', 'low', 'close', 'volume',
             'rsi', 'macd', 'macd_signal', 'macd_diff',
-            'adx', 'bb_pct', 'price_change', 'volatility'
+            'adx', 'adx_pos', 'adx_neg',
+            'bb_pct', 'bb_high', 'bb_low',
+            'sma_20', 'sma_50', 'ema_12', 'ema_26',
+            'price_change', 'price_change_5',
+            'volatility', 'volume_change'
         ]
         available_cols = [col for col in feature_cols if col in recent_df.columns]
         

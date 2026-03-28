@@ -59,7 +59,7 @@ def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df['volume_change'] = df['volume'].pct_change()
     
     # 填充 NaN 值
-    df = df.fillna(method='bfill').fillna(0)
+    df = df.bfill().fillna(0)
     
     return df
 

@@ -44,8 +44,9 @@ def fetch_klines(limit: int = 1000, interval: str = None) -> pd.DataFrame:
             print("警告：未获取到数据")
             return pd.DataFrame()
         
-        # Gate.io K 线格式：[timestamp, volume, close, high, low, open]
-        df = pd.DataFrame(data, columns=['timestamp', 'volume', 'close', 'high', 'low', 'open'])
+        # Gate.io K 线格式：字典列表 [{'t': timestamp, 'o': open, 'h': high, 'l': low, 'c': close, 'v': volume}, ...]
+        df = pd.DataFrame(data)
+        df = df.rename(columns={'t': 'timestamp', 'o': 'open', 'h': 'high', 'l': 'low', 'c': 'close', 'v': 'volume'})
         
         # 转换数据类型
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')

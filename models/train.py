@@ -147,7 +147,7 @@ def train_model(model, X_train, y_train, X_val, y_val, epochs=EPOCHS,
         # 早停检查
         early_stopping(val_loss)
         if early_stopping.early_stop:
-            print(f"\n早停触发（{patience} 轮未改善）")
+            print(f"\n早停触发（{early_stopping.patience} 轮未改善）")
             break
     
     print("=" * 60)

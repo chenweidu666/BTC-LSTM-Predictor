@@ -12,7 +12,7 @@ INTERVAL = "4h"  # K 线周期
 
 # 模型配置
 SEQUENCE_LENGTH = 60  # 输入序列长度（60 根 K 线 = 10 天）
-INPUT_FEATURES = 15   # 输入特征数量
+INPUT_FEATURES = 23   # 输入特征数量（实际特征数）
 HIDDEN_SIZE = 64      # LSTM 隐藏层大小
 NUM_LAYERS = 2        # LSTM 层数
 DROPOUT = 0.2         # Dropout 比例
