@@ -111,6 +111,71 @@ def fetch_funding_rates(limit: int = 1000) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+def fetch_long_short_ratio(limit: int = 1000) -> pd.DataFrame:
+    """
+    获取多空持仓人数比
+    
+    Args:
+        limit: 获取数量
+    
+    Returns:
+        DataFrame with columns: timestamp, long_short_ratio
+    """
+    url = f"{GATE_API_BASE}/futures/usdt/candlesticks"
+    params = {
+        "contract": CONTRACT,
+        "interval": "4h",
+        "limit": limit
+    }
+    
+    # 使用 MCP 工具获取多空比（如果有）或估算
+    # 这里先用一个简单的代理指标：价格变化方向
+    print(f"正在获取多空比数据...")
+    
+    try:
+        # 从价格数据估算多空情绪
+        klines = fetch_klines(limit=limit)
+        if klines.empty:
+            return pd.DataFrame()
+        
+        # 计算多空比代理指标
+        df = klines.copy()
+        df['long_short_ratio'] = 1.0 + (df['close'].pct_change() * 10)  # 简化代理
+        df['long_short_ratio'] = df['long_short_ratio'].clip(0.5, 2.0)  # 限制范围
+        
+        print(f"计算多空比代理指标 {len(df)} 条")
+        return df[['long_short_ratio']]
+        
+    except Exception as e:
+        print(f"获取多空比失败：{e}")
+        return pd.DataFrame()
+
+
+def fetch_open_interest(limit: int = 100) -> pd.DataFrame:
+    """
+    获取持仓量数据（如果有 API 支持）
+    
+    注意：Gate.io 公开 API 可能不直接提供历史持仓量
+    这里用成交量作为代理指标
+    """
+    print(f"正在获取持仓量数据（用成交量代理）...")
+    
+    try:
+        klines = fetch_klines(limit=limit)
+        if klines.empty:
+            return pd.DataFrame()
+        
+        df = klines.copy()
+        df['open_interest'] = df['volume'].rolling(window=20).sum()  # 20 周期滚动和作为代理
+        
+        print(f"计算持仓量代理指标 {len(df)} 条")
+        return df[['open_interest']]
+        
+    except Exception as e:
+        print(f"获取持仓量失败：{e}")
+        return pd.DataFrame()
+
+
 def save_data(df: pd.DataFrame, filename: str = None):
     """保存数据到 CSV"""
     if df.empty:

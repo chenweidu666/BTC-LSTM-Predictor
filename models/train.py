@@ -20,6 +20,9 @@ from config import (
 from models.lstm import create_model, count_parameters
 from data.preprocess import load_and_prepare, train_test_split
 
+# 回归模式：预测涨跌幅（而非方向）
+REGRESSION_MODE = True
+
 
 class EarlyStopping:
     """早停机制"""
@@ -60,6 +63,7 @@ def train_model(model, X_train, y_train, X_val, y_val, epochs=EPOCHS,
     """
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"使用设备：{device}")
+    print(f"训练模式：{'回归（预测涨跌幅）' if REGRESSION_MODE else '分类（预测涨跌方向）'}")
     
     model = model.to(device)
     
@@ -73,8 +77,12 @@ def train_model(model, X_train, y_train, X_val, y_val, epochs=EPOCHS,
     train_dataset = TensorDataset(X_train_tensor, y_train_tensor)
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     
-    # 损失函数和优化器
-    criterion = nn.BCELoss()
+    # 损失函数和优化器（根据模式选择）
+    if REGRESSION_MODE:
+        criterion = nn.MSELoss()  # 回归用 MSE
+    else:
+        criterion = nn.BCELoss()  # 分类用 BCE
+    
     optimizer = optim.Adam(model.parameters(), lr=lr)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', 
                                                       factor=0.5, patience=5)
@@ -83,7 +91,7 @@ def train_model(model, X_train, y_train, X_val, y_val, epochs=EPOCHS,
     early_stopping = EarlyStopping(patience=15, min_delta=0.001)
     
     # 训练循环
-    history = {'train_loss': [], 'val_loss': [], 'train_acc': [], 'val_acc': []}
+    history = {'train_loss': [], 'val_loss': [], 'train_mae': [], 'val_mae': []}
     best_val_loss = float('inf')
     
     print(f"\n开始训练（{epochs} 轮）...")
@@ -93,7 +101,7 @@ def train_model(model, X_train, y_train, X_val, y_val, epochs=EPOCHS,
         # 训练阶段
         model.train()
         train_loss = 0.0
-        train_correct = 0
+        train_mae = 0.0
         
         for batch_X, batch_y in train_loader:
             optimizer.zero_grad()
@@ -103,20 +111,23 @@ def train_model(model, X_train, y_train, X_val, y_val, epochs=EPOCHS,
             optimizer.step()
             
             train_loss += loss.item()
-            predictions = (outputs > 0.5).float()
-            train_correct += (predictions == batch_y).sum().item()
+            train_mae += torch.abs(outputs - batch_y).mean().item()
         
         train_loss /= len(train_loader)
-        train_acc = train_correct / len(y_train)
+        train_mae /= len(train_loader)
         
         # 验证阶段
         model.eval()
         with torch.no_grad():
             val_outputs = model(X_val_tensor).squeeze()
             val_loss = criterion(val_outputs, y_val_tensor).item()
-            val_predictions = (val_outputs > 0.5).float()
-            val_correct = (val_predictions == y_val_tensor).sum().item()
-            val_acc = val_correct / len(y_val)
+            val_mae = torch.abs(val_outputs - y_val_tensor).mean().item()
+            
+            # 如果是回归模式，计算方向准确率
+            if REGRESSION_MODE:
+                val_direction_acc = ((val_outputs > 0) == (y_val_tensor > 0)).float().mean().item()
+            else:
+                val_direction_acc = ((val_outputs > 0.5) == (y_val_tensor > 0.5)).float().mean().item()
         
         # 学习率调整
         scheduler.step(val_loss)
@@ -124,25 +135,36 @@ def train_model(model, X_train, y_train, X_val, y_val, epochs=EPOCHS,
         # 记录历史
         history['train_loss'].append(train_loss)
         history['val_loss'].append(val_loss)
-        history['train_acc'].append(train_acc)
-        history['val_acc'].append(val_acc)
+        history['train_mae'].append(train_mae)
+        history['val_mae'].append(val_mae)
         
         # 打印进度
-        print(f"Epoch {epoch+1:3d}/{epochs} | "
-              f"Train Loss: {train_loss:.4f} Acc: {train_acc:.4f} | "
-              f"Val Loss: {val_loss:.4f} Acc: {val_acc:.4f}")
+        if REGRESSION_MODE:
+            print(f"Epoch {epoch+1:3d}/{epochs} | "
+                  f"Train Loss: {train_loss:.6f} MAE: {train_mae:.6f} | "
+                  f"Val Loss: {val_loss:.6f} MAE: {val_mae:.6f} Dir_Acc: {val_direction_acc:.4f}")
+        else:
+            print(f"Epoch {epoch+1:3d}/{epochs} | "
+                  f"Train Loss: {train_loss:.4f} Acc: {train_mae:.4f} | "
+                  f"Val Loss: {val_loss:.4f} Acc: {val_mae:.4f}")
         
-        # 保存最佳模型
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
+        # 保存最佳模型（回归用 MAE，分类用 loss）
+        metric = val_mae if REGRESSION_MODE else val_loss
+        if metric < best_val_loss:
+            best_val_loss = metric
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'val_loss': val_loss,
-                'val_acc': val_acc,
+                'val_mae': val_mae,
+                'val_direction_acc': val_direction_acc,
+                'regression_mode': REGRESSION_MODE,
             }, Path(MODEL_DIR) / 'best_model.pth')
-            print(f"  → 保存最佳模型 (val_acc={val_acc:.4f})")
+            if REGRESSION_MODE:
+                print(f"  → 保存最佳模型 (val_mae={val_mae:.6f}, dir_acc={val_direction_acc:.4f})")
+            else:
+                print(f"  → 保存最佳模型 (val_acc={val_direction_acc:.4f})")
         
         # 早停检查
         early_stopping(val_loss)
@@ -151,7 +173,12 @@ def train_model(model, X_train, y_train, X_val, y_val, epochs=EPOCHS,
             break
     
     print("=" * 60)
-    print(f"训练完成！最佳验证准确率：{max(history['val_acc']):.4f}")
+    if REGRESSION_MODE:
+        best_idx = history['val_mae'].index(min(history['val_mae']))
+        print(f"训练完成！最佳验证 MAE: {min(history['val_mae']):.6f}")
+        print(f"最佳方向准确率：{history.get('val_direction_acc', [0])[best_idx] if 'val_direction_acc' in history else 'N/A'}")
+    else:
+        print(f"训练完成！最佳验证准确率：{max(history.get('val_acc', [0])):.4f}")
     
     return history
 

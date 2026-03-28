@@ -13,26 +13,33 @@ from config import SEQUENCE_LENGTH, DATA_DIR
 from utils.indicators import calculate_indicators, get_feature_columns
 
 
-def prepare_features(df: pd.DataFrame) -> tuple:
+def prepare_features(df: pd.DataFrame, funding_df: pd.DataFrame = None) -> tuple:
     """
     准备特征数据
     
     Args:
         df: 原始 K 线数据
+        funding_df: 资金费率数据（可选）
     
     Returns:
         (features_df, scaler) 特征 DataFrame 和标准化器
     """
-    print("计算技术指标...")
+    print("计算技术指标 + 量化特征...")
     
     # 计算技术指标
     df = calculate_indicators(df)
+    
+    # 合并资金费率数据（如果有）
+    if funding_df is not None and not funding_df.empty:
+        print("合并资金费率数据...")
+        df = df.join(funding_df, how='left')
+        df['funding_rate'] = df['funding_rate'].fillna(0)
     
     # 选择特征列
     feature_cols = get_feature_columns()
     available_cols = [col for col in feature_cols if col in df.columns]
     
-    print(f"使用 {len(available_cols)} 个特征：{available_cols}")
+    print(f"使用 {len(available_cols)} 个特征")
     
     features = df[available_cols].copy()
     
@@ -49,7 +56,7 @@ def prepare_features(df: pd.DataFrame) -> tuple:
 
 
 def create_sequences(features: pd.DataFrame, target_col: str = 'close', 
-                     sequence_length: int = None) -> tuple:
+                     sequence_length: int = None, predict_return: bool = True) -> tuple:
     """
     创建时间序列样本
     
@@ -57,6 +64,7 @@ def create_sequences(features: pd.DataFrame, target_col: str = 'close',
         features: 特征 DataFrame
         target_col: 目标列名
         sequence_length: 序列长度
+        predict_return: True=预测涨跌幅（回归）, False=预测涨跌方向（分类）
     
     Returns:
         (X, y) X: [samples, sequence_length, features], y: [samples]
@@ -74,16 +82,30 @@ def create_sequences(features: pd.DataFrame, target_col: str = 'close',
         # 输入：过去 sequence_length 个时间步的特征
         X.append(feature_values[i-sequence_length:i])
         
-        # 输出：下一个时间步的涨跌（1=涨，0=跌）
+        # 输出：根据模式选择
         if target_values is not None:
-            # 预测下一时刻是否上涨
-            y.append(1 if target_values[i] > target_values[i-1] else 0)
+            if predict_return:
+                # 回归：预测未来涨跌幅度（连续值）
+                if target_values[i-1] != 0:
+                    ret = (target_values[i] - target_values[i-1]) / target_values[i-1]
+                    # 限制异常值
+                    ret = np.clip(ret, -0.5, 0.5)
+                    y.append(ret)
+                else:
+                    y.append(0.0)
+            else:
+                # 分类：预测涨跌方向（0/1）
+                y.append(1 if target_values[i] > target_values[i-1] else 0)
     
     X = np.array(X)
     y = np.array(y)
     
     print(f"创建完成：X 形状={X.shape}, y 形状={y.shape}")
-    print(f"样本分布：上涨={sum(y)} ({sum(y)/len(y)*100:.1f}%), 下跌={len(y)-sum(y)} ({(len(y)-sum(y))/len(y)*100:.1f}%)")
+    
+    if predict_return:
+        print(f"涨跌幅分布：min={y.min():.4f}, max={y.max():.4f}, mean={y.mean():.4f}, std={y.std():.4f}")
+    else:
+        print(f"样本分布：上涨={sum(y)} ({sum(y)/len(y)*100:.1f}%), 下跌={len(y)-sum(y)} ({(len(y)-sum(y))/len(y)*100:.1f}%)")
     
     return X, y
 
@@ -134,8 +156,9 @@ def load_and_prepare(filename: str = None) -> tuple:
     # 准备特征
     features, scaler = prepare_features(df)
     
-    # 创建序列
-    X, y = create_sequences(features)
+    # 创建序列（使用回归模式）
+    from models.train import REGRESSION_MODE
+    X, y = create_sequences(features, predict_return=REGRESSION_MODE)
     
     return X, y, scaler
 

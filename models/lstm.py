@@ -46,8 +46,8 @@ class LSTMPricePredictor(nn.Module):
             nn.Linear(hidden_size // 2, 32),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(32, 1),
-            nn.Sigmoid()  # 输出涨跌概率（0-1）
+            nn.Linear(32, 1)
+            # 回归模式不加激活函数，让模型输出任意范围的值
         )
     
     def forward(self, x):
