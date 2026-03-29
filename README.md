@@ -223,6 +223,18 @@ print(f"预测准确率：{accuracy*100:.2f}%")
 
 ---
 
+## 📝 更新日志
+
+### v1.1（2026-03-29）
+
+**修复3个关键Bug：**
+
+- ✅ **Bug1 修复**：统一训练/预测特征选择 —— `predictor.py` 改为调用 `prepare_features(feature_selection=FEATURE_SELECTION)`，与训练保持一致，消除特征列数不匹配问题
+- ✅ **Bug2 修复**：持久化 scaler —— 训练后保存 `models/scaler.pkl`，预测时加载并使用 `scaler.transform()`，替代局部 MinMax 归一化，确保预测有效
+- ✅ **Bug3 修复**：概率归一化 —— 训练后保存 `models/model_stats.json`（预测值均值/标准差），预测时用 z-score + sigmoid 替代随意的 `* 10` 系数
+
+---
+
 ## 📝 待办事项
 
 - [ ] 添加资金费率特征

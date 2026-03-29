@@ -1,9 +1,17 @@
 """
 实时预测模块
 使用训练好的 LSTM 模型预测 BTC 未来走势
+
+v1.1 修复内容：
+  - Bug1：统一训练/预测特征选择（由 config.FEATURE_SELECTION 控制）
+  - Bug2：加载持久化的 scaler.pkl，替代局部 MinMax 归一化
+  - Bug3：用 model_stats.json 中的 z-score 做概率归一化
 """
 
 import torch
+import math
+import json
+import joblib
 import numpy as np
 import pandas as pd
 from pathlib import Path
@@ -13,11 +21,12 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import (
     SEQUENCE_LENGTH, INPUT_FEATURES, HIDDEN_SIZE, NUM_LAYERS, DROPOUT,
-    PREDICT_THRESHOLD, MODEL_DIR
+    PREDICT_THRESHOLD, MODEL_DIR, FEATURE_SELECTION
 )
 from models.lstm import create_model
 from utils.indicators import calculate_indicators
 from data.fetch_data import fetch_klines
+from data.preprocess import prepare_features
 
 
 class BTCPredictor:
@@ -49,16 +58,35 @@ class BTCPredictor:
             checkpoint = torch.load(model_path, map_location=self.device)
             self.model.load_state_dict(checkpoint['model_state_dict'])
             print(f"已加载模型：{model_path}")
-            print(f"验证准确率：{checkpoint.get('val_acc', 'N/A')}")
+            print(f"验证 MAE：{checkpoint.get('val_mae', 'N/A')}")
         else:
             print(f"警告：模型文件不存在 {model_path}")
         
         self.model.to(self.device)
         self.model.eval()
         
+        # ===== Bug2修复：加载持久化的 scaler =====
+        scaler_path = Path(MODEL_DIR) / 'scaler.pkl'
+        if scaler_path.exists():
+            self.scaler = joblib.load(scaler_path)
+            print(f"✅ 已加载 scaler：{scaler_path}")
+        else:
+            self.scaler = None
+            print(f"⚠️ 未找到 scaler.pkl，将使用局部 MinMax（不推荐，请重新训练）")
+        
+        # ===== Bug3修复：加载模型统计信息，用于 z-score 概率转换 =====
+        stats_path = Path(MODEL_DIR) / 'model_stats.json'
+        if stats_path.exists():
+            with open(stats_path, 'r') as f:
+                self.model_stats = json.load(f)
+            print(f"✅ 已加载 model_stats：mean={self.model_stats['pred_mean']:.6f}, "
+                  f"std={self.model_stats['pred_std']:.6f}")
+        else:
+            self.model_stats = None
+            print(f"⚠️ 未找到 model_stats.json，将使用默认概率转换（请重新训练）")
+        
         # 存储历史数据用于预测
         self.historical_data = None
-        self.scaler = None
     
     def load_historical_data(self, limit: int = 2000):
         """加载历史数据用于计算指标"""
@@ -68,7 +96,7 @@ class BTCPredictor:
     
     def prepare_input(self, current_data: pd.DataFrame) -> torch.Tensor:
         """
-        准备输入特征
+        准备输入特征（v1.1：统一特征选择 + 使用持久化 scaler）
         
         Args:
             current_data: 当前 K 线数据（包含最新价格）
@@ -84,55 +112,90 @@ class BTCPredictor:
         df = df[~df.index.duplicated(keep='last')]
         df = df.sort_index()
         
-        # 取最近 SEQUENCE_LENGTH 根 K 线
+        # 取足够长的数据计算指标（避免头部 NaN）
+        lookback = SEQUENCE_LENGTH + 100
+        df = df.tail(lookback)
+        
         if len(df) < SEQUENCE_LENGTH:
             raise ValueError(f"数据不足：需要{SEQUENCE_LENGTH}根 K 线，实际{len(df)}根")
         
-        recent_df = df.tail(SEQUENCE_LENGTH)
+        # ===== Bug1修复：使用 prepare_features 统一特征选择（与训练保持一致）=====
+        features_scaled, _ = prepare_features(df, feature_selection=FEATURE_SELECTION)
         
-        # 计算技术指标
-        recent_df = calculate_indicators(recent_df)
+        # 如果有持久化的 scaler，用它重新归一化（覆盖 prepare_features 内部的局部 scaler）
+        if self.scaler is not None:
+            # ===== Bug2修复：用持久化 scaler 做 transform =====
+            raw_features, _ = prepare_features(df, feature_selection=FEATURE_SELECTION)
+            # prepare_features 已经做了归一化，但 scaler 不同；
+            # 这里重新取原始特征，用训练时的 scaler transform
+            try:
+                # 反归一化回原始值（用 prepare_features 内部的局部 scaler 逆变换）
+                # 更简单的做法：直接重新计算技术指标，再用全局 scaler transform
+                df_with_indicators = calculate_indicators(df)
+                
+                # 与训练时的特征列保持一致（由 FEATURE_SELECTION 决定）
+                from data.preprocess import prepare_features as pf
+                feature_cols_map = {
+                    'core': [
+                        'close', 'volume', 'rsi', 'macd', 'macd_diff',
+                        'adx', 'bias_sma20', 'bias_sma50', 'bb_pct', 'bb_width',
+                        'atr_pct', 'williams_r', 'roc_5', 'roc_10', 'volume_ratio',
+                        'obv_change', 'candle_body', 'candle_range', 'momentum_accel', 'volatility'
+                    ],
+                    'momentum': [
+                        'close', 'volume', 'rsi', 'macd', 'macd_diff', 'macd_signal',
+                        'stoch_rsi', 'stoch_rsi_d', 'williams_r', 'roc_5', 'roc_10', 'roc_20',
+                        'bias_sma20', 'bias_sma50', 'bias_ema12', 'bb_pct', 'volatility',
+                        'volatility_ratio', 'volume_change', 'volume_ratio',
+                        'candle_body', 'momentum_accel', 'ma_cross', 'adx', 'atr_pct'
+                    ],
+                }
+                feature_cols = feature_cols_map.get(FEATURE_SELECTION, list(df_with_indicators.columns))
+                available_cols = [c for c in feature_cols if c in df_with_indicators.columns]
+                
+                raw_values = df_with_indicators[available_cols].fillna(0).values
+                
+                # 检查 scaler 期望的特征数是否匹配
+                if hasattr(self.scaler, 'n_features_in_') and self.scaler.n_features_in_ == len(available_cols):
+                    features_values = self.scaler.transform(raw_values)
+                else:
+                    # 列数不匹配时，退回局部归一化
+                    print(f"⚠️ scaler 特征数({getattr(self.scaler, 'n_features_in_', '?')}) "
+                          f"与当前特征数({len(available_cols)})不匹配，使用局部归一化")
+                    f_min = raw_values.min(axis=0)
+                    f_max = raw_values.max(axis=0)
+                    f_range = np.where(f_max - f_min < 1e-8, 1.0, f_max - f_min)
+                    features_values = (raw_values - f_min) / f_range
+                
+                # 取最后 SEQUENCE_LENGTH 行
+                features_seq = features_values[-SEQUENCE_LENGTH:]
+                
+            except Exception as e:
+                print(f"⚠️ 使用持久化 scaler 失败（{e}），退回 prepare_features 归一化")
+                features_seq = features_scaled.values[-SEQUENCE_LENGTH:]
+        else:
+            # 没有 scaler，直接用 prepare_features 的结果
+            features_seq = features_scaled.values[-SEQUENCE_LENGTH:]
         
-        # 选择特征列（42 个，与 preprocess.py 一致）
-        feature_cols = [
-            # 基础价格
-            'open', 'high', 'low', 'close', 'volume',
-            # 趋势指标
-            'rsi', 'macd', 'macd_signal', 'macd_diff',
-            'adx', 'adx_pos', 'adx_neg',
-            'sma_20', 'sma_50', 'ema_12', 'ema_26',
-            'bias_sma20', 'bias_sma50', 'bias_ema12',
-            'ma_cross',
-            # 波动率指标
-            'bb_pct', 'bb_width',
-            'atr', 'atr_pct',
-            'volatility', 'volatility_ratio',
-            # 动量指标
-            'stoch_rsi', 'stoch_rsi_d',
-            'williams_r',
-            'roc_5', 'roc_10', 'roc_20',
-            # 成交量指标
-            'volume_change', 'volume_ratio',
-            'obv_change', 'price_volume_corr',
-            # 价格形态
-            'candle_body', 'candle_upper', 'candle_lower', 'candle_range',
-            'high_low_ratio', 'momentum_accel'
-        ]
-        available_cols = [col for col in feature_cols if col in recent_df.columns]
-        
-        features = recent_df[available_cols].values
-        
-        # 标准化（简单 MinMax）
-        features_min = features.min(axis=0)
-        features_max = features.max(axis=0)
-        features_range = features_max - features_min
-        features_range[features_range == 0] = 1  # 避免除零
-        features_normalized = (features - features_min) / features_range
-        
-        # 转换为 Tensor
-        input_tensor = torch.FloatTensor(features_normalized).unsqueeze(0)  # [1, seq_len, features]
-        
+        input_tensor = torch.FloatTensor(features_seq).unsqueeze(0)  # [1, seq_len, features]
         return input_tensor.to(self.device)
+    
+    def _return_to_probability(self, predicted_return: float) -> float:
+        """
+        将模型输出的涨跌幅转换为上涨概率
+        
+        v1.1 Bug3修复：使用训练集统计的 z-score 做归一化，替代随意的 *10 系数
+        """
+        if self.model_stats is not None:
+            # z-score 归一化后做 sigmoid
+            mean = self.model_stats['pred_mean']
+            std = self.model_stats['pred_std']
+            z_score = (predicted_return - mean) / std
+            probability = 1.0 / (1.0 + math.exp(-z_score))
+        else:
+            # 退回旧方式（仅无 model_stats 时兜底）
+            probability = 1.0 / (1.0 + math.exp(-predicted_return * 10))
+        return probability
     
     def predict(self, current_price: float = None) -> dict:
         """
@@ -158,9 +221,8 @@ class BTCPredictor:
         with torch.no_grad():
             predicted_return = self.model(input_tensor).item()
         
-        # 转换为概率（sigmoid）
-        import math
-        probability = 1 / (1 + math.exp(-predicted_return * 10))  # 缩放到 0-1
+        # ===== Bug3修复：使用 z-score 归一化概率 =====
+        probability = self._return_to_probability(predicted_return)
         
         # 解析结果
         prediction = {
@@ -216,11 +278,14 @@ class BTCPredictor:
             input_tensor = self.prepare_input(window)
             
             with torch.no_grad():
-                prob = self.model(input_tensor).item()
+                predicted_return = self.model(input_tensor).item()
+            
+            probability = self._return_to_probability(predicted_return)
             
             predictions.append({
                 'timestamp': df.index[i].isoformat(),
-                'probability': prob,
+                'probability': probability,
+                'predicted_return': predicted_return,
                 'actual_close': df['close'].iloc[i],
                 'actual_direction': 1 if df['close'].iloc[i] > df['close'].iloc[i-1] else 0
             })

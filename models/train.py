@@ -10,6 +10,7 @@ import numpy as np
 from pathlib import Path
 from datetime import datetime
 import json
+import joblib
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -255,6 +256,32 @@ def main():
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     with open(model_dir / f'training_history_{timestamp}.json', 'w') as f:
         json.dump(history, f, indent=2)
+    
+    # ===== Bug2修复：持久化 scaler =====
+    print("\n保存 scaler 到 models/scaler.pkl ...")
+    joblib.dump(scaler, model_dir / 'scaler.pkl')
+    print("✅ scaler 已保存")
+    
+    # ===== Bug3修复：保存预测值统计信息，用于概率归一化 =====
+    print("计算训练集预测值统计信息...")
+    model.eval()
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    with torch.no_grad():
+        X_all_tensor = torch.FloatTensor(X).to(device)
+        all_preds = model(X_all_tensor).squeeze().cpu().numpy()
+    pred_mean = float(np.mean(all_preds))
+    pred_std = float(np.std(all_preds))
+    if pred_std < 1e-8:
+        pred_std = 1.0  # 避免除零
+    model_stats = {
+        'pred_mean': pred_mean,
+        'pred_std': pred_std,
+        'regression_mode': REGRESSION_MODE,
+        'trained_at': timestamp,
+    }
+    with open(model_dir / 'model_stats.json', 'w') as f:
+        json.dump(model_stats, f, indent=2)
+    print(f"✅ model_stats.json 已保存 (mean={pred_mean:.6f}, std={pred_std:.6f})")
     
     # 绘制训练曲线
     plot_history(history, save_path=model_dir / f'training_curve_{timestamp}.png')
